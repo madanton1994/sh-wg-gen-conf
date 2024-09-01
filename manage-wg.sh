@@ -3,29 +3,48 @@
 WG_CONFIG="/etc/wireguard/wg1.conf"
 SERVER_PRIV_KEY_FILE="/etc/wireguard/server.priv"
 SERVER_PUBLIC_KEY=$(wg pubkey < "$SERVER_PRIV_KEY_FILE")
-SERVER_ENDPOINT="example.com:51820"
+SERVER_ENDPOINT="example.com:62011"
 CLIENT_IP_PREFIX="10.66.66."
+CLIENT_IPv6_PREFIX="fd42:42:42::"
 CLIENT_IP_RANGE_START=200
 CLIENT_IP_RANGE_END=254
+CLIENT_IPv6_RANGE_START=20  # Начальное значение для диапазона IPv6
+CLIENT_IPv6_RANGE_END=254
 
 function add_client() {
   CLIENT_NAME="$1"
   CLIENT_DIR="/etc/wireguard/clients/$CLIENT_NAME"
 
-  # Проверка существующих IP-адресов в конфигурационном файле
-  LAST_IP=$(grep -oP "AllowedIPs = 10\.66\.66\.\K([0-9]+)(?=/32)" "$WG_CONFIG" | sort -n | tail -n 1)
+  # Проверка существующих IP-адресов IPv4 в конфигурационном файле
+  LAST_IP=$(grep -oP "AllowedIPs\s*=\s*10\.66\.66\.\K[0-9]+" "$WG_CONFIG" | sort -n | tail -n 1)
 
   if [ -z "$LAST_IP" ]; then
     NEXT_IP=$CLIENT_IP_RANGE_START
   else
     if [ "$LAST_IP" -ge "$CLIENT_IP_RANGE_END" ]; then
-      echo "Нет доступных IP-адресов в диапазоне 10.66.66.200-254"
+      echo "Нет доступных IPv4-адресов в диапазоне 10.66.66.200-254"
       exit 1
     fi
     NEXT_IP=$((LAST_IP + 1))
   fi
 
+  # Проверка существующих IP-адресов IPv6 в конфигурационном файле
+  LAST_IPv6=$(grep -oP "fd42:42:42::\K[0-9a-f]+(?=/128)" "$WG_CONFIG" | sort -n | tail -n 1)
+
+  # Логика назначения следующего IPv6-адреса
+  if [ -z "$LAST_IPv6" ]; then
+    NEXT_IPv6=$CLIENT_IPv6_RANGE_START
+  else
+    LAST_IPv6_DECIMAL=$((16#$LAST_IPv6))  # Преобразование последнего IPv6 суффикса из шестнадцатеричного в десятичный
+    if [ "$LAST_IPv6_DECIMAL" -ge "$CLIENT_IPv6_RANGE_END" ]; then
+      echo "Нет доступных IPv6-адресов в диапазоне fd42:42:42::20-254"
+      exit 1
+    fi
+    NEXT_IPv6=$((LAST_IPv6_DECIMAL + 1))
+  fi
+
   CLIENT_IP="${CLIENT_IP_PREFIX}${NEXT_IP}/32"
+  CLIENT_IPv6="${CLIENT_IPv6_PREFIX}$(printf '%x' $NEXT_IPv6)/128"
 
   # Создание директории для клиента
   mkdir -p "$CLIENT_DIR"
@@ -49,14 +68,14 @@ function add_client() {
   echo -e "\n# peer_$CLIENT_NAME\n[Peer]
 PublicKey = $(cat "$CLIENT_PUBLIC_KEY_FILE")
 PresharedKey = $(cat "$PSK_FILE")
-AllowedIPs = $CLIENT_IP" | sudo tee -a "$WG_CONFIG" > /dev/null
+AllowedIPs = $CLIENT_IP, $CLIENT_IPv6" | sudo tee -a "$WG_CONFIG" > /dev/null
 
   # Создание клиентского конфигурационного файла
   CLIENT_CONFIG="$CLIENT_DIR/$CLIENT_NAME.conf"
   echo "[Interface]
 PrivateKey = $CLIENT_PRIVATE_KEY
-Address = $CLIENT_IP
-DNS = 8.8.8.8
+Address = $CLIENT_IP, $CLIENT_IPv6
+DNS = 8.8.8.8, 1.1.1.1, 2001:4860:4860::8888
 ListenPort = 51820
 
 [Peer]
@@ -120,6 +139,6 @@ if [ "$2" == "add" ]; then
 elif [ "$2" == "delete" ]; then
   delete_client "$1"
 else
-  echo "Использование: $0 <имя_клиента> <add|delete>"
+  echo "Usage: $0 <client_name> <add|delete>"
 fi
 
